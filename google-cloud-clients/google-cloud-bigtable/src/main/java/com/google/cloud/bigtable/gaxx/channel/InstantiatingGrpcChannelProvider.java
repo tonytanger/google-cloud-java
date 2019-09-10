@@ -44,7 +44,6 @@ import com.google.api.gax.rpc.TransportChannelProvider;
 import com.google.auth.Credentials;
 import com.google.auth.oauth2.ComputeEngineCredentials;
 import com.google.common.base.Preconditions;
-import com.google.common.collect.ImmutableList;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
 import io.grpc.alts.ComputeEngineChannelBuilder;
@@ -182,20 +181,13 @@ public final class InstantiatingGrpcChannelProvider implements TransportChannelP
   }
 
   private TransportChannel createChannel() throws IOException {
-    ManagedChannel outerChannel;
-
-    if (poolSize == null || poolSize == 1) {
-      outerChannel = createSingleChannel();
+    ChannelPool channelPool;
+    if (poolSize == null) {
+      channelPool = new ChannelPool(1, new ChannelFactoryImpl(), executorProvider.getExecutor());
     } else {
-      ImmutableList.Builder<ManagedChannel> channels = ImmutableList.builder();
-
-      for (int i = 0; i < poolSize; i++) {
-        channels.add(createSingleChannel());
-      }
-      outerChannel = new ChannelPool(channels.build());
+      channelPool = new ChannelPool(poolSize, new ChannelFactoryImpl(), executorProvider.getExecutor());
     }
-
-    return GrpcTransportChannel.create(outerChannel);
+    return GrpcTransportChannel.create(channelPool);
   }
 
   // The environment variable is used during the rollout phase for directpath.
@@ -207,6 +199,12 @@ public final class InstantiatingGrpcChannelProvider implements TransportChannelP
       if (!service.isEmpty() && serviceAddress.contains(service)) return true;
     }
     return false;
+  }
+
+  private class ChannelFactoryImpl implements CreateChannel {
+    public ManagedChannel createChannel() throws IOException {
+      return createSingleChannel();
+    }
   }
 
   private ManagedChannel createSingleChannel() throws IOException {
