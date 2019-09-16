@@ -21,6 +21,7 @@ import com.google.bigtable.v2.MutateRowsRequest;
 import com.google.bigtable.v2.ReadModifyWriteRowRequest;
 import com.google.bigtable.v2.ReadRowsRequest;
 import com.google.bigtable.v2.SampleRowKeysRequest;
+import io.grpc.CallCredentials;
 import io.grpc.CallOptions;
 import io.grpc.Channel;
 import io.grpc.ClientCall;
@@ -30,10 +31,10 @@ import io.grpc.MethodDescriptor;
 import java.util.Map;
 
 class CloudBigtableTableExtractorInterceptor implements ClientInterceptor {
-  private Map<String, CallOptions> tableCallOptions;
+  private Map<String, CallCredentials> tableCredentials;
 
-  CloudBigtableTableExtractorInterceptor(Map<String, CallOptions> tableCallOptions) {
-    this.tableCallOptions = tableCallOptions;
+  CloudBigtableTableExtractorInterceptor(Map<String, CallCredentials> tableCredentials) {
+    this.tableCredentials = tableCredentials;
   }
 
   @Override
@@ -49,10 +50,7 @@ class CloudBigtableTableExtractorInterceptor implements ClientInterceptor {
 
       @Override
       public void sendMessage(ReqT message) {
-        // System.out.printf("Service Name: %s\n", method.getServiceName());
-        // System.out.printf("Service Name: %s\n", method.getFullMethodName());
-        // System.out.println(message);
-
+        // extract table name and credentials for cloud bigtable requests
         String tableName = "";
         if (method.getServiceName() != null && method.getServiceName().equals("google.bigtable.v2.Bigtable")) {
           if (message instanceof ReadRowsRequest) {
@@ -70,8 +68,7 @@ class CloudBigtableTableExtractorInterceptor implements ClientInterceptor {
           }
         }
         if (!tableName.isEmpty()) {
-          // System.err.printf("Extracted table name %s\n", tableName);
-          tableCallOptions.put(tableName, callOptions);
+          tableCredentials.put(tableName, callOptions.getCredentials());
         }
         delegate().sendMessage(message);
       }

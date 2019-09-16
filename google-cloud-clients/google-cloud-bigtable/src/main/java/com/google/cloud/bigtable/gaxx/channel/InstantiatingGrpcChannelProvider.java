@@ -30,10 +30,15 @@ import com.google.api.gax.rpc.TransportChannelProvider;
 import com.google.auth.Credentials;
 import com.google.auth.oauth2.ComputeEngineCredentials;
 import com.google.common.base.Preconditions;
+import com.google.common.collect.ImmutableList;
+import io.grpc.CallCredentials;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
 import io.grpc.alts.ComputeEngineChannelBuilder;
 import java.io.IOException;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -57,6 +62,10 @@ public final class InstantiatingGrpcChannelProvider implements TransportChannelP
   static final String DIRECT_PATH_ENV_VAR = "GOOGLE_CLOUD_ENABLE_DIRECT_PATH";
   static final long DIRECT_PATH_KEEP_ALIVE_TIME_SECONDS = 3600;
   static final long DIRECT_PATH_KEEP_ALIVE_TIMEOUT_SECONDS = 20;
+  // refresh every 55 minutes
+  static final long CHANNEL_REFRESH_PERIOD = 55;
+  // spread out the refresh between channels to every minute
+  static final long CHANNEL_REFRESH_DELAY = 1;
 
   private final int processorCount;
   private final ExecutorProvider executorProvider;
@@ -71,6 +80,8 @@ public final class InstantiatingGrpcChannelProvider implements TransportChannelP
   @Nullable private final Boolean keepAliveWithoutCalls;
   @Nullable private final Integer poolSize;
   @Nullable private final Credentials credentials;
+  @Nullable private final PrimeChannel primeChannel;
+  @Nullable private final Map<String, CallCredentials> tableCredentials;
 
   @Nullable
   private final ApiFunction<ManagedChannelBuilder, ManagedChannelBuilder> channelConfigurator;
@@ -90,6 +101,8 @@ public final class InstantiatingGrpcChannelProvider implements TransportChannelP
     this.poolSize = builder.poolSize;
     this.channelConfigurator = builder.channelConfigurator;
     this.credentials = builder.credentials;
+    this.primeChannel = builder.primeChannel;
+    this.tableCredentials = builder.tableCredentials;
   }
 
   @Override
@@ -166,14 +179,50 @@ public final class InstantiatingGrpcChannelProvider implements TransportChannelP
     }
   }
 
-  private TransportChannel createChannel() throws IOException {
-    ChannelPool channelPool;
-    if (poolSize == null) {
-      channelPool = new ChannelPool(1, new ChannelFactoryImpl(), executorProvider.getExecutor());
-    } else {
-      channelPool = new ChannelPool(poolSize, new ChannelFactoryImpl(), executorProvider.getExecutor());
+  private class RefreshSingleChannel implements Runnable {
+    private int index;
+    private List<ManagedChannel> channels;
+
+    RefreshSingleChannel(List<ManagedChannel> channels, int index) {
+      this.channels = channels;
+      this.index = index;
     }
-    return GrpcTransportChannel.create(channelPool);
+
+    @Override
+    public void run() {
+      try {
+        ManagedChannel oldChannel = channels.get(index);
+        ManagedChannel newChannel = createSingleChannel();
+        channels.set(index, newChannel);
+        if (oldChannel == null) {
+          return;
+        }
+        oldChannel.shutdown();
+        if (!oldChannel.awaitTermination(1, TimeUnit.MINUTES)) {
+          oldChannel.shutdownNow();
+        }
+      } catch (IOException | InterruptedException e) {
+        e.printStackTrace();
+      }
+    }
+  }
+
+  private TransportChannel createChannel() throws IOException {
+    List<ManagedChannel> channels = new ArrayList<>();
+    int channelListSize;
+    if (poolSize == null) {
+      channelListSize = 1;
+    } else {
+      channelListSize = poolSize;
+    }
+    for (int i = 0; i < channelListSize; i++) {
+      channels.add(createSingleChannel());
+      executorProvider.getExecutor()
+          .scheduleWithFixedDelay(new RefreshSingleChannel(channels, i),
+              CHANNEL_REFRESH_PERIOD - i * CHANNEL_REFRESH_DELAY,
+              CHANNEL_REFRESH_PERIOD, TimeUnit.SECONDS);
+    }
+    return GrpcTransportChannel.create(new ChannelPool(channels));
   }
 
   // The environment variable is used during the rollout phase for directpath.
@@ -185,12 +234,6 @@ public final class InstantiatingGrpcChannelProvider implements TransportChannelP
       if (!service.isEmpty() && serviceAddress.contains(service)) return true;
     }
     return false;
-  }
-
-  private class ChannelFactoryImpl implements CreateChannel {
-    public ManagedChannel createChannel() throws IOException {
-      return createSingleChannel();
-    }
   }
 
   private ManagedChannel createSingleChannel() throws IOException {
@@ -224,6 +267,7 @@ public final class InstantiatingGrpcChannelProvider implements TransportChannelP
         builder
             // See https://github.com/googleapis/gapic-generator/issues/2816
             .disableServiceConfigLookUp()
+            .intercept(new CloudBigtableTableExtractorInterceptor(tableCredentials))
             .intercept(new GrpcChannelUUIDInterceptor())
             .intercept(headerInterceptor)
             .intercept(metadataHandlerInterceptor)
@@ -251,8 +295,11 @@ public final class InstantiatingGrpcChannelProvider implements TransportChannelP
     if (channelConfigurator != null) {
       builder = channelConfigurator.apply(builder);
     }
-
-    return builder.build();
+    ManagedChannel managedChannel = builder.build();
+    if (primeChannel != null) {
+      primeChannel.primeChannel(managedChannel);
+    }
+    return managedChannel;
   }
 
   /** The endpoint to be used for the channel. */
@@ -309,6 +356,8 @@ public final class InstantiatingGrpcChannelProvider implements TransportChannelP
     @Nullable private Integer poolSize;
     @Nullable private ApiFunction<ManagedChannelBuilder, ManagedChannelBuilder> channelConfigurator;
     @Nullable private Credentials credentials;
+    @Nullable private PrimeChannel primeChannel;
+    @Nullable private Map<String, CallCredentials> tableCredentials;
 
     private Builder() {
       processorCount = Runtime.getRuntime().availableProcessors();
@@ -330,6 +379,8 @@ public final class InstantiatingGrpcChannelProvider implements TransportChannelP
       this.poolSize = provider.poolSize;
       this.channelConfigurator = provider.channelConfigurator;
       this.credentials = provider.credentials;
+      this.primeChannel = provider.primeChannel;
+      this.tableCredentials = provider.tableCredentials;
     }
 
     /** Sets the number of available CPUs, used internally for testing. */
@@ -490,6 +541,12 @@ public final class InstantiatingGrpcChannelProvider implements TransportChannelP
 
     public Builder setCredentials(Credentials credentials) {
       this.credentials = credentials;
+      return this;
+    }
+
+    public Builder setPrimeKey(String primeKey, String primeKeyFamilyName) {
+      this.tableCredentials = new HashMap<>();
+      this.primeChannel = new PrimeChannel(this.tableCredentials, primeKey, primeKeyFamilyName);
       return this;
     }
 

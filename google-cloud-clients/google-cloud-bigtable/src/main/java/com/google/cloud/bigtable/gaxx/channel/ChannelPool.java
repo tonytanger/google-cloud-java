@@ -19,12 +19,7 @@ import io.grpc.CallOptions;
 import io.grpc.ClientCall;
 import io.grpc.ManagedChannel;
 import io.grpc.MethodDescriptor;
-import java.io.IOException;
-import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
-import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -37,28 +32,14 @@ class ChannelPool extends ManagedChannel {
   private final List<ManagedChannel> channels;
   private final AtomicInteger indexTicker = new AtomicInteger();
   private final String authority;
-  private final CreateChannel createChannel;
-  private final PrimeChannel primeChannel;
-  private final Map<String, CallOptions> tableCallOptions = new HashMap<>();
-  // refresh every 25 minutes
-  private final long CHANNEL_REFRESH_PERIOD = 25 * 60;
-  // spread out the refresh between channels to every minute
-  private final long CHANNEL_REFRESH_DELAY = 60;
 
   /**
    * Initializes the channel pool. Assumes that all channels have the same authority.
    *
+   * @param channels a List of channels to pool.
    */
-  ChannelPool(int poolSize, CreateChannel createChannel, ScheduledExecutorService executorService) throws IOException {
-    this.channels = new ArrayList<>();
-    this.createChannel = createChannel;
-    this.primeChannel = new PrimeTable(tableCallOptions, "cloud_bigtable/primetable/special_key");
-    for (int i = 0; i < poolSize; i++) {
-      ManagedChannel managedChannel = createChannel.createChannel();
-      primeChannel.primeChannel(managedChannel);
-      channels.add(managedChannel);
-      executorService.scheduleWithFixedDelay(new RefreshSingleChannel(i), CHANNEL_REFRESH_PERIOD - i * CHANNEL_REFRESH_DELAY, CHANNEL_REFRESH_PERIOD, TimeUnit.SECONDS);
-    }
+  ChannelPool(List<ManagedChannel> channels) {
+    this.channels = channels;
     authority = channels.get(0).authority();
   }
 
@@ -78,9 +59,7 @@ class ChannelPool extends ManagedChannel {
   public <ReqT, RespT> ClientCall<ReqT, RespT> newCall(
       MethodDescriptor<ReqT, RespT> methodDescriptor, CallOptions callOptions) {
 
-    int index = getNextChannelIndex(indexTicker.getAndIncrement());
-    ManagedChannel channel = channels.get(index);
-    return new CloudBigtableTableExtractorInterceptor(tableCallOptions).interceptCall(methodDescriptor, callOptions, channel);
+    return getNextChannel().newCall(methodDescriptor, callOptions);
   }
 
   /** {@inheritDoc} */
@@ -143,42 +122,27 @@ class ChannelPool extends ManagedChannel {
    * Performs a simple round robin on the list of {@link ManagedChannel}s in the {@code channels}
    * list.
    *
-   * @return An int denoting the index of the {@link ManagedChannel} that can be used for a single RPC call.
+   * @return A {@link ManagedChannel} that can be used for a single RPC call.
    */
-  private int getNextChannelIndex(int affinity) {
+  private ManagedChannel getNextChannel() {
+    return getChannel(indexTicker.getAndIncrement());
+  }
+
+  /**
+   * Returns one of the channels managed by this pool. The pool continues to "own" the channel, and
+   * the caller should not shut it down.
+   *
+   * @param affinity Two calls to this method with the same affinity returns the same channel. The
+   *     reverse is not true: Two calls with different affinities might return the same channel.
+   *     However, the implementation should attempt to spread load evenly.
+   */
+  ManagedChannel getChannel(int affinity) {
     int index = affinity % channels.size();
     index = Math.abs(index);
     // If index is the most negative int, abs(index) is still negative.
     if (index < 0) {
       index = 0;
     }
-    return index;
-  }
-
-  private class RefreshSingleChannel implements Runnable {
-    private int index;
-
-    RefreshSingleChannel(int index) {
-      this.index = index;
-    }
-    @Override
-    public void run() {
-      try {
-        // System.err.printf("Resetting Channel %d\n", index);
-        ManagedChannel oldChannel = channels.get(index);
-        ManagedChannel newChannel = createChannel.createChannel();
-        primeChannel.primeChannel(newChannel);
-        // System.err.printf("New channel %d created\n", index);
-        channels.set(index, newChannel);
-        // System.err.printf("New channel %d set\n", index);
-        oldChannel.shutdown();
-        if (!oldChannel.awaitTermination(1, TimeUnit.MINUTES)) {
-          oldChannel.shutdownNow();
-        }
-        // System.err.printf("Swapped Channel %d\n", index);
-      } catch (IOException | InterruptedException e) {
-        e.printStackTrace();
-      }
-    }
+    return channels.get(index);
   }
 }
