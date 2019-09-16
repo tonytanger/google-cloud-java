@@ -45,22 +45,9 @@ class PrimeChannel {
 
   void primeChannel(ManagedChannel channel) {
     for (Map.Entry<String, CallCredentials> tableCredential: tableCredentials.entrySet()) {
-      System.out.printf("Priming table %s\n", tableCredential.getKey());
-      long start = System.currentTimeMillis();
       String tableId = tableCredential.getKey();
-      // CallCredentials credentials = tableCallOption.getValue();
       CallOptions callOptions = CallOptions.DEFAULT
           .withCallCredentials(tableCredential.getValue());
-      // .withExecutor(callOptionsFromRequest.getExecutor())
-      // .withCompression(callOptionsFromRequest.getCompressor())
-      // .withAuthority(callOptionsFromRequest.getAuthority());
-
-      // if (callOptionsFromRequest.isWaitForReady()) {
-      //   callOptions = callOptions.withWaitForReady();
-      // } else {
-      //   callOptions = callOptions.withoutWaitForReady();
-      // }
-      // System.out.println(callOptions.toString());
 
       MethodDescriptor<ReadRowsRequest, ReadRowsResponse>
           readRowMethodDescriptor =
@@ -85,37 +72,6 @@ class PrimeChannel {
         responseIterator.next();
       }
 
-      // MethodDescriptor<CheckAndMutateRowRequest, CheckAndMutateRowResponse>
-      //     checkAndMutateRowMethodDescriptor =
-      //     MethodDescriptor.<CheckAndMutateRowRequest, CheckAndMutateRowResponse>newBuilder()
-      //         .setType(MethodDescriptor.MethodType.UNARY)
-      //         .setFullMethodName("google.bigtable.v2.Bigtable/CheckAndMutateRow")
-      //         .setRequestMarshaller(
-      //             ProtoUtils.marshaller(CheckAndMutateRowRequest.getDefaultInstance()))
-      //         .setResponseMarshaller(
-      //             ProtoUtils.marshaller(CheckAndMutateRowResponse.getDefaultInstance()))
-      //         .build();
-      //
-      // CheckAndMutateRowRequest checkAndMutateRowRequest = CheckAndMutateRowRequest.newBuilder()
-      //     .setTableName(tableId)
-      //     .setRowKey(ByteString.copyFromUtf8("primetablekey"))
-      //     .addTrueMutations(Mutation.newBuilder().setSetCell(
-      //         SetCell.newBuilder()
-      //             .setFamilyName("data1")
-      //             .setColumnQualifier(ByteString.copyFromUtf8("1"))
-      //             .setValue(ByteString.copyFromUtf8("true"))
-      //             .build()))
-      //     .addFalseMutations(Mutation.newBuilder().setSetCell(
-      //         SetCell.newBuilder()
-      //             .setFamilyName("data1")
-      //             .setColumnQualifier(ByteString.copyFromUtf8("1"))
-      //             .setValue(ByteString.copyFromUtf8("false"))
-      //             .build()))
-      //     .build();
-      //
-      // ClientCalls
-      //     .blockingUnaryCall(channel, checkAndMutateRowMethodDescriptor, callOptions, checkAndMutateRowRequest);
-
       MethodDescriptor<MutateRowRequest, MutateRowResponse>
           mutateRowMethodDescriptor =
           MethodDescriptor.<MutateRowRequest, MutateRowResponse>newBuilder()
@@ -138,10 +94,6 @@ class PrimeChannel {
 
       ClientCalls
           .blockingUnaryCall(channel, mutateRowMethodDescriptor, callOptions, mutateRowRequest);
-
-      long end = System.currentTimeMillis() - start;
-      System.err.printf("Channel priming took %dms\n",end);
     }
-    System.err.println("Tables primed");
   }
 }
