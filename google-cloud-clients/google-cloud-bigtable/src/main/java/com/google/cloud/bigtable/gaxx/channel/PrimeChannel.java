@@ -32,6 +32,9 @@ import io.grpc.stub.ClientCalls;
 import java.util.Iterator;
 import java.util.Map;
 
+/**
+ * PrimeChannel makes read and write requests to cloud bigtable to warm cache
+ */
 class PrimeChannel {
   private Map<String, CallCredentials> tableCredentials;
   private String primeKey;
@@ -48,29 +51,6 @@ class PrimeChannel {
       String tableId = tableCredential.getKey();
       CallOptions callOptions = CallOptions.DEFAULT
           .withCallCredentials(tableCredential.getValue());
-
-      MethodDescriptor<ReadRowsRequest, ReadRowsResponse>
-          readRowMethodDescriptor =
-          MethodDescriptor.<ReadRowsRequest, ReadRowsResponse>newBuilder()
-              .setType(MethodDescriptor.MethodType.SERVER_STREAMING)
-              .setFullMethodName("google.bigtable.v2.Bigtable/ReadRows")
-              .setRequestMarshaller(ProtoUtils.marshaller(ReadRowsRequest.getDefaultInstance()))
-              .setResponseMarshaller(
-                  ProtoUtils.marshaller(ReadRowsResponse.getDefaultInstance()))
-              .build();
-
-      ReadRowsRequest readRowsRequest = ReadRowsRequest.newBuilder()
-          .setTableName(tableId)
-          .setRows(
-              RowSet.newBuilder().addRowKeys(ByteString.copyFromUtf8(primeKey)))
-          .build();
-
-      Iterator<ReadRowsResponse> responseIterator = ClientCalls
-          .blockingServerStreamingCall(channel, readRowMethodDescriptor, callOptions, readRowsRequest);
-
-      while (responseIterator.hasNext()) {
-        responseIterator.next();
-      }
 
       MethodDescriptor<MutateRowRequest, MutateRowResponse>
           mutateRowMethodDescriptor =
@@ -94,6 +74,29 @@ class PrimeChannel {
 
       ClientCalls
           .blockingUnaryCall(channel, mutateRowMethodDescriptor, callOptions, mutateRowRequest);
+
+      MethodDescriptor<ReadRowsRequest, ReadRowsResponse>
+          readRowMethodDescriptor =
+          MethodDescriptor.<ReadRowsRequest, ReadRowsResponse>newBuilder()
+              .setType(MethodDescriptor.MethodType.SERVER_STREAMING)
+              .setFullMethodName("google.bigtable.v2.Bigtable/ReadRows")
+              .setRequestMarshaller(ProtoUtils.marshaller(ReadRowsRequest.getDefaultInstance()))
+              .setResponseMarshaller(
+                  ProtoUtils.marshaller(ReadRowsResponse.getDefaultInstance()))
+              .build();
+
+      ReadRowsRequest readRowsRequest = ReadRowsRequest.newBuilder()
+          .setTableName(tableId)
+          .setRows(
+              RowSet.newBuilder().addRowKeys(ByteString.copyFromUtf8(primeKey)))
+          .build();
+
+      Iterator<ReadRowsResponse> responseIterator = ClientCalls
+          .blockingServerStreamingCall(channel, readRowMethodDescriptor, callOptions, readRowsRequest);
+
+      while (responseIterator.hasNext()) {
+        responseIterator.next();
+      }
     }
   }
 }
